@@ -74,7 +74,7 @@ if not creds:
 storage_client = storage.Client(credentials=creds, project=creds.project_id)
 bucket = storage_client.bucket(GCS_BUCKET_NAME) if GCS_BUCKET_NAME else None
 if not GCS_BUCKET_NAME:
-    print('[BOOT][WARN] GCS_BUCKET_NAME empty; GCS features disabled')
+    print('[BOOT][WARN] GCS_BUCKET_NAME empty; GCS features disabled (local fallback)')
 
 sheets_service = build('sheets', 'v4', credentials=creds)
 drive_service  = build('drive',  'v3', credentials=creds)
@@ -377,13 +377,37 @@ def analyze_and_calculate():
     ref_file_path = ""
     if ref_file:
         ref_file_path = f"{base_path}/ref/{ref_file.filename}"
-        bucket.blob(ref_file_path).upload_from_file(ref_file)
+        if bucket:
+            try:
+                bucket.blob(ref_file_path).upload_from_file(ref_file)
+            except Exception as _e:
+                print(f"[GCS][WARN] upload ref failed fallback to local: {_e}")
+                _local_path = f"/tmp_fallback/{ref_file_path}"
+                os.makedirs(os.path.dirname(_local_path), exist_ok=True)
+                ref_file.stream.seek(0)
+                ref_file.save(_local_path)
+        else:
+            _local_path = f"/tmp_fallback/{ref_file_path}"
+            os.makedirs(os.path.dirname(_local_path), exist_ok=True)
+            ref_file.save(_local_path)
 
     ocr_files = request.files.getlist('file')
     ocr_paths = []
     for f in ocr_files:
         p = f"{base_path}/ocr/{f.filename}"
-        bucket.blob(p).upload_from_file(f)
+        if bucket:
+            try:
+                bucket.blob(p).upload_from_file(f)
+            except Exception as _e:
+                print(f"[GCS][WARN] upload ocr failed fallback to local: {_e}")
+                _local_path = f"/tmp_fallback/{p}"
+                os.makedirs(os.path.dirname(_local_path), exist_ok=True)
+                f.stream.seek(0)
+                f.save(_local_path)
+        else:
+            _local_path = f"/tmp_fallback/{p}"
+            os.makedirs(os.path.dirname(_local_path), exist_ok=True)
+            f.save(_local_path)
         ocr_paths.append(p)
 
     sheet_name = request.form.get('sheet')
@@ -395,7 +419,11 @@ def analyze_and_calculate():
             ref_table = []
             if ref_file_path:
                 yield (yield_event("dbg", f"[STEP1] read ref {ref_file_path}"))
-                buf = io.BytesIO(bucket.blob(ref_file_path).download_as_bytes())
+                if bucket:
+                    buf = io.BytesIO(bucket.blob(ref_file_path).download_as_bytes())
+                else:
+                    _lp = f"/tmp_fallback/{ref_file_path}"
+                    buf = open(_lp, 'rb')
                 fn = ref_file_path.lower()
                 if fn.endswith(('.xlsx', '.xls')): df = pd.read_excel(buf, header=0, dtype=str)
                 elif fn.endswith('.csv'):          df = pd.read_csv(buf, header=0, dtype=str)
@@ -412,7 +440,12 @@ def analyze_and_calculate():
             for i, p in enumerate(ocr_paths):
                 hb = heartbeat()
                 if hb: yield hb
-                content = bucket.blob(p).download_as_bytes()
+                if bucket:
+                    content = bucket.blob(p).download_as_bytes()
+                else:
+                    _lp = f"/tmp_fallback/{p}"
+                    with open(_lp, 'rb') as _f:
+                        content = _f.read()
                 result = yield from analyze_with_backoff(content, yield_event)
                 t = result.tables[0] if result.tables else None
                 if t:
@@ -507,12 +540,23 @@ def analyze_and_calculate():
             yield (yield_event("dbg", f"[FATAL][STEP1] {e}"))
             traceback.print_exc()
         finally:
-            try:
-                for blob in bucket.list_blobs(prefix=f"tmp/{task_id}/"):
-                    blob.delete()
-                yield (yield_event("dbg", "[CLEANUP] tmp deleted"))
-            except Exception as ce:
-                yield (yield_event("dbg", f"[CLEANUP][WARN] {ce}"))
+            if bucket:
+                try:
+                    for blob in bucket.list_blobs(prefix=f"tmp/{task_id}/"):
+                        blob.delete()
+                    yield (yield_event("dbg", "[CLEANUP] tmp deleted"))
+                except Exception as ce:
+                    yield (yield_event("dbg", f"[CLEANUP][WARN] {ce}"))
+            else:
+                # Local fallback cleanup (best-effort)
+                try:
+                    _base = f"/tmp_fallback/tmp/{task_id}"
+                    if os.path.exists(_base):
+                        import shutil
+                        shutil.rmtree(_base, ignore_errors=True)
+                        yield (yield_event("dbg", "[CLEANUP] local tmp deleted"))
+                except Exception as ce:
+                    yield (yield_event("dbg", f"[CLEANUP][WARN] local {ce}"))
             yield (yield_event("done", "ステップ1完了"))
 
     return Response(generate(), mimetype='text/event-stream; charset=utf-8')
