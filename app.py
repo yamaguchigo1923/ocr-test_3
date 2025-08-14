@@ -420,7 +420,12 @@ def analyze_and_calculate():
             if ref_file_path:
                 yield (yield_event("dbg", f"[STEP1] read ref {ref_file_path}"))
                 if bucket:
-                    buf = io.BytesIO(bucket.blob(ref_file_path).download_as_bytes())
+                    try:
+                        buf = io.BytesIO(bucket.blob(ref_file_path).download_as_bytes())
+                    except Exception as _e:
+                        yield (yield_event("dbg", f"[GCS][WARN] download ref fallback local: {_e}"))
+                        _lp = f"/tmp_fallback/{ref_file_path}"
+                        buf = open(_lp, 'rb')
                 else:
                     _lp = f"/tmp_fallback/{ref_file_path}"
                     buf = open(_lp, 'rb')
@@ -441,7 +446,13 @@ def analyze_and_calculate():
                 hb = heartbeat()
                 if hb: yield hb
                 if bucket:
-                    content = bucket.blob(p).download_as_bytes()
+                    try:
+                        content = bucket.blob(p).download_as_bytes()
+                    except Exception as _e:
+                        yield (yield_event("dbg", f"[GCS][WARN] download ocr fallback local: {_e}"))
+                        _lp = f"/tmp_fallback/{p}"
+                        with open(_lp, 'rb') as _f:
+                            content = _f.read()
                 else:
                     _lp = f"/tmp_fallback/{p}"
                     with open(_lp, 'rb') as _f:
