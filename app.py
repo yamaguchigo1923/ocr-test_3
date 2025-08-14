@@ -21,6 +21,10 @@ except ImportError as e:
 app = Flask(__name__)
 print("[BOOT] Flask initialized")
 
+# アプリバージョン（デプロイ反映確認用に手動更新）
+APP_VERSION = "2025-08-14a"
+print(f"[BOOT] APP_VERSION={APP_VERSION}")
+
 # --- ENV ---
 AZURE_ENDPOINT  = os.environ.get("AZURE_ENDPOINT", "")
 AZURE_KEY       = os.environ.get("AZURE_KEY", "")
