@@ -11,7 +11,7 @@ try:
     import pandas as pd
     import openpyxl  # noqa: F401
     from datetime import datetime, timezone, timedelta
-    import os, traceback, io, time, json, uuid, random
+    import os, traceback, io, time, json, uuid, random, base64
     import config
     print("[BOOT] libs ok")
 except ImportError as e:
@@ -38,6 +38,15 @@ storage_client = storage.Client()
 bucket = storage_client.bucket(GCS_BUCKET_NAME)
 
 SERVICE_ACCOUNT_FILE = 'service-account.json'
+# Render 等で secrets を環境変数 (Base64) から供給する: SERVICE_ACCOUNT_JSON_B64
+_sa_b64 = os.environ.get("SERVICE_ACCOUNT_JSON_B64")
+if _sa_b64 and not os.path.exists(SERVICE_ACCOUNT_FILE):
+    try:
+        with open(SERVICE_ACCOUNT_FILE, 'wb') as f:
+            f.write(base64.b64decode(_sa_b64))
+        print('[BOOT] service-account.json written from env')
+    except Exception as _e:
+        print(f'[BOOT][WARN] failed to write service-account.json: {_e}')
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
