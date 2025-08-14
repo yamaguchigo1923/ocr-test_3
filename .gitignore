@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual env
+ocr-test_3/
+venv/
+.venv/
+
+# Secrets
+service-account.json
+clinet_secret.json
+
+# Logs
+*.log
+
+# Old / unused
+_old/
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

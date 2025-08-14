@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>ocr-test_3</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react@18/umd/react.development.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/@babel/standalone/babel.min.js"
+    ></script>
+    <style>
+      body {
+        background: #0d1117;
+        color: #d1d5db;
+        font-family: "Inter", system-ui, sans-serif;
+      }
+      .glass {
+        background: rgba(255, 255, 255, 0.04);
+        backdrop-filter: blur(6px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .scroll-shadow {
+        mask-image: linear-gradient(
+          to bottom,
+          rgba(0, 0, 0, 1) 85%,
+          rgba(0, 0, 0, 0)
+        );
+      }
+      .spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid #334155;
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .file-row-drag {
+        cursor: grab;
+      }
+      .file-row-drag:active {
+        cursor: grabbing;
+      }
+      .fade-in {
+        animation: fade 0.4s ease;
+      }
+      @keyframes fade {
+        from {
+          opacity: 0;
+          transform: translateY(4px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+      table {
+        font-size: 12px;
+      }
+      th,
+      td {
+        white-space: nowrap;
+      }
+    </style>
+  </head>
+  <body class="min-h-screen">
+    <div id="root" class="p-6"></div>
+    <script type="text/babel">
+      const { useState, useEffect, useRef, useCallback } = React;
+
+      // ---- Utility SSE Chunk Parser ----
+      function parseSSEChunk(chunk, cb) {
+        chunk.split("\n\n").forEach((line) => {
+          if (line.startsWith("data:")) {
+            const payload = line.slice(5).trim();
+            if (!payload) return;
+            try {
+              const ev = JSON.parse(payload);
+              cb(ev.event, ev.data);
+            } catch (e) {}
+          }
+        });
+      }
+
+      // ---- Drag Reorder List Item ----
+      function OCRItem({
+        file,
+        index,
+        onRemove,
+        onDragStart,
+        onDragOver,
+        onDrop,
+        dragging,
+      }) {
+        return (
+          <div
+            draggable
+            onDragStart={(e) => onDragStart(e, index)}
+            onDragOver={(e) => onDragOver(e, index)}
+            onDrop={(e) => onDrop(e, index)}
+            className={`group flex items-center gap-3 glass rounded px-3 py-2 text-sm file-row-drag transition border border-transparent ${
+              dragging === index
+                ? "ring-2 ring-blue-500 border-blue-500"
+                : "hover:border-slate-600"
+            }`}
+          >
+            <span className="w-6 text-center text-xs font-mono text-slate-400 select-none">
+              {index + 1}
+            </span>
+            <div className="flex-1 truncate" title={file.name}>
+              {file.name}
+            </div>
+            <span className="text-slate-500 text-xs opacity-0 group-hover:opacity-100 transition">
+              drag
+            </span>
+            <button
+              onClick={() => onRemove(index)}
+              className="ml-2 text-slate-400 hover:text-red-400 transition"
+              title="削除"
+            >
+              ✕
+            </button>
+          </div>
+        );
+      }
+
+      // ---- Main App ----
+      function App() {
+        const [refFile, setRefFile] = useState(null);
+        const [ocrFiles, setOcrFiles] = useState([]);
+        const [dragging, setDragging] = useState(null);
+        const [logs, setLogs] = useState([]);
+        const [started, setStarted] = useState(false);
+        const [analyzing, setAnalyzing] = useState(false);
+        const [exporting, setExporting] = useState(false);
+        const [refTable, setRefTable] = useState(null);
+        const [ocrTable, setOcrTable] = useState(null);
+        const [calcData, setCalcData] = useState(null);
+        const [finalLinks, setFinalLinks] = useState([]);
+        const logRef = useRef();
+
+        const pushLog = useCallback((msg) => {
+          setLogs((l) => [...l, `[${new Date().toLocaleTimeString()}] ${msg}`]);
+        }, []);
+
+        useEffect(() => {
+          if (logRef.current) {
+            logRef.current.scrollTop = logRef.current.scrollHeight;
+          }
+        }, [logs]);
+
+        function handleAddOcr(e) {
+          const files = Array.from(e.target.files || []);
+          if (files.length) {
+            setOcrFiles((prev) => [...prev, ...files]);
+          }
+          e.target.value = "";
+        }
+        function handleRemoveOcr(idx) {
+          setOcrFiles((fs) => fs.filter((_, i) => i !== idx));
+        }
+
+        // Drag reorder logic
+        const dragItem = useRef();
+        function onDragStart(e, i) {
+          dragItem.current = i;
+          setDragging(i);
+        }
+        function onDragOver(e, i) {
+          e.preventDefault();
+        }
+        function onDrop(e, i) {
+          e.preventDefault();
+          setOcrFiles((f) => {
+            const arr = [...f];
+            const [m] = arr.splice(dragItem.current, 1);
+            arr.splice(i, 0, m);
+            return arr;
+          });
+          setDragging(null);
+        }
+
+        async function runAnalyze() {
+          if (!ocrFiles.length) {
+            pushLog("OCR対象がありません");
+            return;
+          }
+          setStarted(true);
+          setAnalyzing(true);
+          setCalcData(null);
+          setFinalLinks([]);
+          setRefTable(null);
+          setOcrTable(null);
+          setLogs([]);
+          const form = new FormData();
+          if (refFile) form.append("refSheetFile", refFile);
+          ocrFiles.forEach((f) => form.append("file", f));
+          form.append("sheet", "入札書");
+          try {
+            const res = await fetch("/analyze_and_calculate", {
+              method: "POST",
+              body: form,
+            });
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              parseSSEChunk(chunk, (ev, data) => {
+                if (ev === "dbg") pushLog(data);
+                else if (ev === "ref_table") setRefTable(data);
+                else if (ev === "ocr_table") setOcrTable(data);
+                else if (ev === "final_url") setFinalLinks((l) => [...l, data]);
+                else if (ev === "calculation_complete") {
+                  setCalcData(data);
+                } else if (ev === "done") pushLog(data);
+              });
+            }
+          } catch (e) {
+            pushLog("ERROR " + e);
+          } finally {
+            setAnalyzing(false);
+          }
+        }
+
+        async function runExport() {
+          if (!calcData) {
+            pushLog("計算結果がありません");
+            return;
+          }
+          setExporting(true);
+          try {
+            const res = await fetch("/create_spreadsheet", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(calcData),
+            });
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              parseSSEChunk(chunk, (ev, data) => {
+                if (ev === "dbg") pushLog(data);
+                else if (ev === "final_url") setFinalLinks((l) => [...l, data]);
+                else if (ev === "done") pushLog(data);
+              });
+            }
+          } catch (e) {
+            pushLog("EXPORT ERROR " + e);
+          } finally {
+            setExporting(false);
+          }
+        }
+
+        // Table renderer
+        function DataTable({ rows }) {
+          if (!rows || !rows.length) return null;
+          return (
+            <div className="overflow-auto max-h-96 border border-slate-700 rounded">
+              <table className="min-w-full text-xs">
+                <tbody>
+                  {rows.map((r, ri) => (
+                    <tr
+                      key={ri}
+                      className={
+                        ri === 0
+                          ? "bg-slate-800 text-slate-200 sticky top-0"
+                          : ""
+                      }
+                    >
+                      {(r || []).map((c, ci) => (
+                        <td
+                          key={ci}
+                          className="px-2 py-1 border border-slate-700 whitespace-nowrap"
+                        >
+                          {c || ""}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
+        }
+
+        function CalcResult() {
+          if (!calcData) return null;
+          const { maker_data, maker_cds } = calcData;
+          const rows = [];
+          rows.push([
+            "メーカー",
+            "商品CD",
+            "メーカー(結果)",
+            "商品名",
+            "規格",
+            "備考",
+          ]);
+          Object.keys(maker_cds).forEach((m) => {
+            const cds = maker_cds[m];
+            const rws = maker_data[m] || [];
+            cds.forEach((cd, i) => {
+              const v = rws[i] || [];
+              rows.push([
+                m,
+                cd,
+                v[0] || "",
+                v[1] || "",
+                v[2] || "",
+                v[3] || "",
+              ]);
+            });
+          });
+          return <DataTable rows={rows} />;
+        }
+
+        return (
+          <div className="space-y-10">
+            <header className="mb-4">
+              <h1 className="text-2xl font-semibold tracking-wide text-slate-100">
+                ocr-test_3
+              </h1>
+              <p className="text-xs text-slate-500 mt-1">
+                画像入札書 + 見積書 → 抽出 / 変換 / スプレッドシート出力
+              </p>
+            </header>
+
+            {/* Input Section */}
+            <section className="grid md:grid-cols-2 gap-6">
+              <div className="glass rounded-lg p-5 flex flex-col gap-4 fade-in">
+                <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
+                  見積書ファイル
+                </h2>
+                <label className="block cursor-pointer group">
+                  <div className="border border-dashed border-slate-600 group-hover:border-sky-500 rounded p-4 text-center text-slate-400 text-sm transition">
+                    {refFile ? (
+                      <span className="text-slate-200 font-medium">
+                        {refFile.name}
+                      </span>
+                    ) : (
+                      "クリックして Excel / CSV を選択"
+                    )}
+                  </div>
+                  <input
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={(e) => setRefFile(e.target.files[0] || null)}
+                  />
+                </label>
+              </div>
+              <div className="glass rounded-lg p-5 flex flex-col gap-4 fade-in">
+                <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider flex items-center justify-between">
+                  OCR 対象画像{" "}
+                  <span className="text-[10px] text-slate-500">
+                    ドラッグで並び替え
+                  </span>
+                </h2>
+                <label className="block cursor-pointer group">
+                  <div className="border border-dashed border-slate-600 group-hover:border-sky-500 rounded p-4 text-center text-slate-400 text-sm transition">
+                    クリックして画像 / PDF を追加
+                  </div>
+                  <input
+                    multiple
+                    type="file"
+                    accept="image/*,.pdf"
+                    className="hidden"
+                    onChange={handleAddOcr}
+                  />
+                </label>
+                <div className="flex flex-col gap-2 max-h-64 overflow-auto pr-1">
+                  {ocrFiles.map((f, i) => (
+                    <OCRItem
+                      key={i}
+                      file={f}
+                      index={i}
+                      dragging={dragging}
+                      onRemove={handleRemoveOcr}
+                      onDragStart={onDragStart}
+                      onDragOver={onDragOver}
+                      onDrop={onDrop}
+                    />
+                  ))}
+                  {!ocrFiles.length && (
+                    <div className="text-xs text-slate-500">ファイル未選択</div>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {/* Action Buttons */}
+            <div className="flex items-center gap-6 pt-2">
+              <button
+                onClick={runAnalyze}
+                disabled={analyzing}
+                className="relative overflow-hidden group inline-flex items-center gap-3 px-10 py-5 rounded-lg text-lg font-semibold tracking-wide transition disabled:opacity-50 disabled:cursor-not-allowed bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white shadow-lg shadow-sky-900/40"
+              >
+                {analyzing && <span className="spinner"></span>}
+                <span>{analyzing ? "解析中..." : "解析開始"}</span>
+              </button>
+              {calcData && (
+                <button
+                  onClick={runExport}
+                  disabled={exporting}
+                  className="inline-flex items-center gap-3 px-8 py-4 rounded-lg text-base font-semibold bg-slate-800 hover:bg-slate-700 transition text-slate-100 border border-slate-600 disabled:opacity-50"
+                >
+                  {exporting && <span className="spinner"></span>} 出力
+                  (シート生成)
+                </button>
+              )}
+            </div>
+
+            {/* Conditional Sections */}
+            {started && (
+              <div className="space-y-8 fade-in">
+                <section className="glass rounded-lg p-5">
+                  <h2 className="text-sm font-semibold text-slate-300 tracking-wider mb-3">
+                    出力ファイルリンク
+                  </h2>
+                  <ul className="space-y-1 text-sm">
+                    {finalLinks.map((l, i) => (
+                      <li key={i}>
+                        <a
+                          className="text-sky-400 hover:text-sky-300 underline underline-offset-2"
+                          href={l.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          ▶ {l.name}
+                        </a>
+                      </li>
+                    ))}
+                    {!finalLinks.length && (
+                      <li className="text-slate-500 text-xs">
+                        まだ生成されていません
+                      </li>
+                    )}
+                  </ul>
+                </section>
+
+                {/* 1: 処理ログ */}
+                <section className="glass rounded-lg p-5 flex flex-col gap-3 max-h-[440px]">
+                  <h2 className="text-sm font-semibold text-slate-300 tracking-wider">
+                    処理ログ
+                  </h2>
+                  <div
+                    ref={logRef}
+                    className="flex-1 overflow-auto text-xs font-mono leading-relaxed bg-[#090d14] border border-slate-700 rounded p-3 whitespace-pre-wrap scroll-shadow"
+                  >
+                    {logs.map((l, i) => (
+                      <div key={i} className="text-slate-400">
+                        {l}
+                      </div>
+                    ))}
+                    {!logs.length && (
+                      <div className="text-slate-600">まだログはありません</div>
+                    )}
+                  </div>
+                </section>
+
+                {/* 2: 抽出結果 */}
+                <section className="glass rounded-lg p-5">
+                  <h2 className="text-sm font-semibold text-slate-300 tracking-wider mb-3">
+                    抽出結果 (メーカー×商品CD)
+                  </h2>
+                  <CalcResult />
+                </section>
+
+                {/* 3: プレビュー (横並び) */}
+                <section className="glass rounded-lg p-5">
+                  <h2 className="sr-only">プレビュー</h2>
+                  <div className="grid md:grid-cols-2 gap-6">
+                    <div>
+                      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                        見積書プレビュー
+                      </h3>
+                      <DataTable rows={refTable} />
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                        OCR結果プレビュー
+                      </h3>
+                      <DataTable rows={ocrTable} />
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>

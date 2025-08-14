@@ -1,0 +1,9 @@
+Flask
+gunicorn
+azure-core
+azure-ai-documentintelligence
+google-api-python-client
+google-cloud-storage
+google-auth
+pandas
+openpyxl

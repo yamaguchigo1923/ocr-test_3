@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>OCR 表抽出 - 入札書</title>
+    <style>
+        body { margin: 0; padding: 16px; font-family: sans-serif; }
+        #fileList { list-style: none; padding: 0; margin-bottom: 1em; }
+        .file-item { display: flex; align-items: center; padding: 4px; border: 1px solid #333; margin-bottom: 4px; cursor: grab; }
+        .file-name { flex-grow: 1; }
+        .delete-btn { background: none; border: none; color: red; font-size: 16px; cursor: pointer; }
+        table, th, td { border: 1px solid #333; border-collapse: collapse; padding: 6px; }
+        th, td { min-width: 60px; text-align: left; }
+        #error { color: red; white-space: pre-wrap; margin-top: 1em; }
+        #loading { display: none; margin-top: 1em; }
+        #loadingText { display: inline-block; margin-right: 8px; }
+        #dots { display: inline-block; }
+        #stopBtn { display: none; margin-left: 8px; }
+        #sheetLink { margin-top: 1em; font-weight: bold; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@latest/Sortable.min.js"></script>
+</head>
+<body>
+    <div id="header-container"></div>
+    <script>
+        fetch("/static/header.html").then(res => res.text()).then(html => document.getElementById("header-container").innerHTML = html);
+    </script>
+
+    <h1>入札書を出力するページ</h1>
+    <form id="uploadForm" enctype="multipart/form-data" action="/analyze" method="post">
+        <input type="hidden" name="sheet" value="入札書">
+        <input type="file" id="fileInput" accept="image/*,.pdf" multiple>
+        <ul id="fileList"></ul>
+        <button type="submit">解析</button>
+    </form>
+
+    <div id="loading">
+        <span id="loadingText">解析中</span><span id="dots"></span><br>
+        <button id="stopBtn" type="button">停止</button>
+    </div>    
+    <div id="sheetLink"></div>
+    <div id="error"></div>
+    <div id="result" style="margin-top:1em;"></div>
+
+    <script>
+        const fileInput = document.getElementById('fileInput');
+        const fileList = document.getElementById('fileList');
+        let selectedFiles = [];
+        let controller;
+        let dotInterval;
+
+        function updateList() {
+            fileList.innerHTML = '';
+            selectedFiles.forEach((file, index) => {
+                const li = document.createElement('li');
+                li.className = 'file-item';
+                li.dataset.index = index;
+
+                const span = document.createElement('span');
+                span.className = 'file-name';
+                span.textContent = file.name;
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'delete-btn';
+                btn.textContent = '✕';
+                btn.addEventListener('click', () => {
+                    selectedFiles.splice(index, 1);
+                    updateList();
+                });
+
+                li.appendChild(span);
+                li.appendChild(btn);
+                fileList.appendChild(li);
+            });
+        }
+
+        fileInput.addEventListener('change', () => {
+            const newFiles = Array.from(fileInput.files);
+            selectedFiles.push(...newFiles);
+            fileInput.value = '';
+            updateList();
+        });
+
+        new Sortable(fileList, {
+            animation: 150,
+            onEnd: evt => {
+                const moved = selectedFiles.splice(evt.oldIndex, 1)[0];
+                selectedFiles.splice(evt.newIndex, 0, moved);
+                updateList();
+            }
+        });
+
+        const loading = document.getElementById('loading');
+        const dots = document.getElementById('dots');
+        const stopBtn = document.getElementById('stopBtn');
+
+        function startLoading() {
+            let count = 0;
+            dots.textContent = '';
+            loading.style.display = 'block';
+            stopBtn.style.display = 'inline-block';
+            controller = new AbortController();
+            dotInterval = setInterval(() => {
+                count = (count + 1) % 4;
+                dots.textContent = '.'.repeat(count);
+            }, 500);
+        }
+
+        function stopLoading() {
+            clearInterval(dotInterval);
+            loading.style.display = 'none';
+            stopBtn.style.display = 'none';
+            if (controller) controller.abort();
+        }
+
+        stopBtn.addEventListener('click', stopLoading);
+
+        document.getElementById('uploadForm').addEventListener('submit', async e => {
+            e.preventDefault();
+            if (selectedFiles.length === 0) return;
+            document.getElementById('error').textContent = '';
+            document.getElementById('result').innerHTML = '';
+            document.getElementById('sheetLink').innerHTML = '';
+            startLoading();
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('file', f));
+            formData.append('sheet', '入札書');
+
+            try {
+                const res = await fetch('/analyze', { method: 'POST', body: formData, signal: controller.signal });
+                const data = await res.json();
+                stopLoading();
+                if (!res.ok) throw new Error(data.error || 'Unknown');
+
+                document.getElementById('sheetLink').innerHTML =
+                    `<a href="${data.sheetUrl}" target="_blank">スプレッドシートを開く</a>`;
+                const resultDiv = document.getElementById('result');
+                const table = document.createElement('table');
+                data.tables.forEach(row => {
+                    const tr = document.createElement('tr');
+                    row.forEach(cell => {
+                        const td = document.createElement('td');
+                        td.textContent = cell || '';
+                        tr.appendChild(td);
+                    });
+                    table.appendChild(tr);
+                });
+                resultDiv.appendChild(table);
+            } catch (err) {
+                if (err.name === 'AbortError') {
+                    document.getElementById('error').textContent = '解析を中止しました。';
+                } else {
+                    document.getElementById('error').textContent = 'Error: ' + err;
+                }
+                stopLoading();
+            }
+        });
+    </script>
+</body>
+</html>

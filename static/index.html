@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>ocr-test ホーム</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: sans-serif;
+        }
+        main {
+            padding: 2em;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- 共通黒ヘッダー読み込み -->
+    <div id="header-container"></div>
+    <script>
+        fetch("/static/header.html")
+            .then(res => res.text())
+            .then(html => {
+                document.getElementById("header-container").innerHTML = html;
+            });
+    </script>
+
+    <main>
+        <ul>
+            <li><a href="/sheet1">入札書を出力するページ</a></li>
+            <li><a href="/sheet2">見積書を出力するページ</a></li>
+        </ul>
+    </main>
+
+</body>
+</html>
