@@ -33,25 +33,45 @@ POLL_MAX_WAIT  = float(os.environ.get('POLL_MAX_WAIT', '60'))      # 1チャン�
 POLL_MIN_READY = float(os.environ.get('POLL_MIN_READY', '0.95'))   # “準備完了行”率で判定（95%既定）
 READY_COL_IDX  = int(os.environ.get('READY_COL_IDX', '0'))         # 取得範囲(B:K)に対する準備判定列の相対index（0=B列）
 
-# --- Clients ---
-storage_client = storage.Client()
-bucket = storage_client.bucket(GCS_BUCKET_NAME)
-
+## --- Credentials & Google API Clients Initialization (order fixed) ---
 SERVICE_ACCOUNT_FILE = 'service-account.json'
-# Render 等で secrets を環境変数 (Base64) から供給する: SERVICE_ACCOUNT_JSON_B64
+
+# 1) Reconstruct service-account.json from Base64 env (if provided)
 _sa_b64 = os.environ.get("SERVICE_ACCOUNT_JSON_B64")
 if _sa_b64 and not os.path.exists(SERVICE_ACCOUNT_FILE):
     try:
         with open(SERVICE_ACCOUNT_FILE, 'wb') as f:
             f.write(base64.b64decode(_sa_b64))
-        print('[BOOT] service-account.json written from env')
+        print('[BOOT] service-account.json written from SERVICE_ACCOUNT_JSON_B64')
     except Exception as _e:
         print(f'[BOOT][WARN] failed to write service-account.json: {_e}')
+
+# 2) Load credentials
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
 ]
-creds = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+creds = None
+if os.path.exists(SERVICE_ACCOUNT_FILE):
+    try:
+        creds = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
+        print(f"[BOOT] credentials loaded project={getattr(creds, 'project_id', 'UNKNOWN')}")
+    except Exception as _e:
+        print(f"[BOOT][FATAL] failed to load credentials: {_e}")
+else:
+    print('[BOOT][FATAL] service-account.json not found (and no Base64 provided)')
+
+if not creds:
+    raise RuntimeError('Google service account credentials not available')
+
+# 3) Initialize clients WITH credentials (storage first needs creds before bucket usage)
+storage_client = storage.Client(credentials=creds, project=creds.project_id)
+bucket = storage_client.bucket(GCS_BUCKET_NAME) if GCS_BUCKET_NAME else None
+if not GCS_BUCKET_NAME:
+    print('[BOOT][WARN] GCS_BUCKET_NAME empty; GCS features disabled')
+
 sheets_service = build('sheets', 'v4', credentials=creds)
 drive_service  = build('drive',  'v3', credentials=creds)
 
