@@ -599,6 +599,29 @@ def create_spreadsheet():
             out_name = f"成分表出力_{ts}"
             yield (yield_event("dbg", f"[STEP2] create {out_name}"))
 
+            # --- Diagnostic (no functional change) ---
+            if os.environ.get('DRIVE_DIAG', '1') == '1':
+                try:
+                    sa_email = getattr(creds, 'service_account_email', getattr(creds, 'service_account_email', 'UNKNOWN'))
+                except Exception:
+                    sa_email = 'UNKNOWN'
+                try:
+                    about = drive_service.about().get(fields='user,storageQuota').execute()
+                    quota = about.get('storageQuota', {})
+                    usage = quota.get('usage')
+                    limit = quota.get('limit')
+                    yield (yield_event("dbg", f"[STEP2][DIAG] sa_email={sa_email} usage={usage} limit={limit}"))
+                except Exception as de:
+                    yield (yield_event("dbg", f"[STEP2][DIAG][WARN] about.get failed {de}"))
+                try:
+                    # Count existing output spreadsheets (not trashed)
+                    q = "name contains '成分表出力_' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+                    res_list = drive_service.files().list(q=q, pageSize=10, fields='files(id,name)', supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+                    files_list = res_list.get('files', [])
+                    yield (yield_event("dbg", f"[STEP2][DIAG] recent_outputs={len(files_list)} sample={[f.get('name') for f in files_list][:3]}"))
+                except Exception as le:
+                    yield (yield_event("dbg", f"[STEP2][DIAG][WARN] list failed {le}"))
+
             new_ss = yield from execute_with_backoff(
                 drive_service.files().create(
                     body={'name': out_name, 'mimeType': 'application/vnd.google-apps.spreadsheet',
