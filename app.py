@@ -593,23 +593,38 @@ def analyze_and_calculate():
                         # 括弧や（xx月分）除去してセンター名
                         name_clean = re.sub(r'[（(].*?[）)]', '', best).strip()
                         center_name = name_clean
-
-                # ファイル名からのフォールバック（全文字列: 鉾田学校給食センター（10月分）.xlsx 等）
-                if (not center_name or not center_month):
+                # ファイル名からのフォールバック（最優先・より頑健）
+                if not center_name or not center_month:
                     try:
-                        ref_file_name = request.files.get('refSheetFile').filename if request.files.get('refSheetFile') else ''
-                        if ref_file_name:
-                            import os, re
-                            base = os.path.splitext(ref_file_name)[0]
-                            # 半角/全角括弧どちらも許容
-                            m2 = re.search(r'^(?P<name>.+?)[（(](?P<mon>\d{1,2})\s*月(?:分)?[)）]$', base)
-                            if m2:
-                                if not center_name:
-                                    center_name = m2.group('name').strip()
-                                if not center_month:
-                                    center_month = m2.group('mon')
-                    except Exception:
-                        pass
+                        ref_up = request.files.get('refSheetFile')
+                        ref_file_name = ref_up.filename if ref_up else ''
+                        import os, re
+                        base = os.path.splitext(os.path.basename(ref_file_name))[0]
+                        if base:
+                            # 正規表現パターン複数（全角/半角括弧・月分/ 月 ・区切り）
+                            patterns = [
+                                r'^(?P<name>.+?)[（(](?P<mon>\d{1,2})\s*月(?:分)?[)）]$',
+                                r'^(?P<name>.+?)\s*[-_ ]\s*(?P<mon>\d{1,2})\s*月(?:分)?$',
+                                r'^(?P<name>.+?)(?:（|\()(?:(?:令和|平成)?\d+年)?(?P<mon>\d{1,2})月(?:分)?[)）]$'
+                            ]
+                            matched = False
+                            for p in patterns:
+                                m2 = re.match(p, base)
+                                if m2:
+                                    nm = m2.group('name').strip()
+                                    mon = m2.group('mon')
+                                    if not center_name:
+                                        center_name = nm
+                                    if not center_month:
+                                        center_month = mon
+                                    matched = True
+                                    break
+                            # 括弧付きで名前だけでも残せるように（最後のフォールバック）
+                            if not matched and not center_name and ('センター' in base):
+                                center_name = re.sub(r'[（(].*?[）)]', '', base).strip()
+                        yield (yield_event("dbg", f"[CENTER][FILENAME] base={base} extracted name={center_name} month={center_month}"))
+                    except Exception as _fe:
+                        yield (yield_event("dbg", f"[CENTER][FILENAME][WARN] {_fe}"))
                 yield (yield_event("dbg", f"[CENTER] name={center_name} month={center_month}"))
             except Exception as _e:
                 yield (yield_event("dbg", f"[CENTER][WARN] {_e}"))
