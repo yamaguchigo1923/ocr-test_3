@@ -169,15 +169,30 @@ def process_bid_tables(merged_rows, yield_event):
     # テンプレの期待：後処理で「成分表」「見本」を追加
     if "成分表" not in header: header.append("成分表")
     if "見本"   not in header: header.append("見本")
-
-    target = set("銘柄条件提出見本備考")
-    best, idx = -1, 0
+    # 優先して使いたい列名の候補（OCRゆらぎを吸収）
+    prefer_patterns = {"銘柄·条件", "銘柄・条件", "銘柄条件"}
+    judge_idx = None
     for i, h in enumerate(merged_rows[0]):
-        if h:
-            score = sum(1 for c in set(str(h)) if c in target)
-            if score > best:
-                best, idx = score, i
-    yield (yield_event("dbg", f"[POST] header={header} judge_idx={idx} judge_name={merged_rows[0][idx]}"))
+        if not h: continue
+        norm = str(h).replace(" ", "").replace("　", "")
+        norm_mid = norm.replace("・", "·")
+        norm_cmp = norm_mid.replace("·", "")
+        if norm in prefer_patterns or norm_mid in prefer_patterns or norm_cmp == "銘柄条件":
+            judge_idx = i
+            break
+    if judge_idx is None:
+        # フォールバック（既存ロジック）
+        target = set("銘柄条件提出見本備考")
+        best, idx_f = -1, 0
+        for i, h in enumerate(merged_rows[0]):
+            if h:
+                score = sum(1 for c in set(str(h)) if c in target)
+                if score > best:
+                    best, idx_f = score, i
+        judge_idx = idx_f
+        yield (yield_event("dbg", f"[POST] header={header} judge(FALLBACK) idx={judge_idx} name={merged_rows[0][judge_idx]}"))
+    else:
+        yield (yield_event("dbg", f"[POST] header={header} judge(FIXED) idx={judge_idx} name={merged_rows[0][judge_idx]}"))
 
     out = [header]
     match_seibun = set("成分表提出")
@@ -185,10 +200,12 @@ def process_bid_tables(merged_rows, yield_event):
     for r in merged_rows[1:]:
         row = list(r)
         while len(row) < len(header): row.append("")
-        val = (row[idx] or "")
+        val = (row[judge_idx] or "")
         cnt = sum(1 for c in set(val) if c in match_seibun)
-        row[-2] = "○" if cnt >= 2 else ""
-        row[-1] = "○" if "見本" in val else ""
+        # 成分表列: 条件不成立でも明示的に "-" を入れる
+        row[-2] = "○" if cnt >= 2 else "-"
+        # 見本列: 見本文字列含む場合 3、なければ - （仕様通り）
+        row[-1] = "3" if "見本" in val else "-"
         if row[-2] == "○": hits += 1
         out.append(row)
     yield (yield_event("dbg", f"[POST] 成分表=○ hits={hits}/{len(out)-1}"))
@@ -495,18 +512,23 @@ def analyze_and_calculate():
                 header, ref_header = merged_rows[0], ref_table[0]
                 yield (yield_event("dbg", f"[SEL] ocr_header={header}"))
                 yield (yield_event("dbg", f"[SEL] ref_header={ref_header}"))
-                if '成分表' in header and '商品CD' in ref_header and 'メーカー' in ref_header:
+                if '成分表' in header and '見本' in header and '商品CD' in ref_header and 'メーカー' in ref_header:
                     seibun_idx = header.index('成分表')
+                    mihon_idx  = header.index('見本')
                     cd_idx     = ref_header.index('商品CD')
                     maker_idx  = ref_header.index('メーカー')
                     hits = 0
-                    for idx, row in enumerate(merged_rows[1:], start=1):
-                        mark = (len(row) > seibun_idx and row[seibun_idx] == '○')
-                        if mark and idx < len(ref_table):
-                            cd = (ref_table[idx][cd_idx]).lstrip('0') or '0'
-                            maker = ref_table[idx][maker_idx]
-                            selections.append((maker, cd)); hits += 1
-                    yield (yield_event("dbg", f"[SEL] 成分表○ hits={hits} selections={len(selections)}"))
+                    for ridx, row in enumerate(merged_rows[1:], start=1):
+                        if ridx >= len(ref_table):
+                            continue
+                        seibun_flag = (len(row) > seibun_idx and row[seibun_idx] == '○')
+                        mihon_flag  = (len(row) > mihon_idx and row[mihon_idx] in ('3', '○'))
+                        if seibun_flag or mihon_flag:
+                            cd = (ref_table[ridx][cd_idx]).lstrip('0') or '0'
+                            maker = ref_table[ridx][maker_idx]
+                            selections.append((maker, cd, '○' if seibun_flag else '-', '3' if mihon_flag else '-'))
+                            hits += 1
+                    yield (yield_event("dbg", f"[SEL] 成分表/見本 hits={hits} selections={len(selections)}"))
                 else:
                     yield (yield_event("dbg", "[SEL][WARN] 必要ヘッダが見つからない"))
             yield (yield_event("dbg", f"[SEL] preview_first10={selections[:10]}"))
@@ -518,28 +540,26 @@ def analyze_and_calculate():
             if selections:
                 catalog = yield from load_product_catalog(config.TEMPLATE_SPREADSHEET_ID, yield_event)
                 yield (yield_event("dbg", f"[CATALOG] size={len(catalog)}"))
-                for maker, cd in selections:
+                for maker, cd, seibun_flag, mihon_flag in selections:
                     maker_key = maker or "メーカー名なし"
-                    maker_cds.setdefault(maker_key, []).append(cd)
-                # values_bk: ここでは最小必要列: [メーカー, 商品名, 規格, 備考]
-                # 従来 B:K (10列) だったが、使用箇所は出力貼り付けのみなので可変長で OK。
-                # 必要なら後で列拡張。
-                for maker_key, cds in maker_cds.items():
+                    maker_cds.setdefault(maker_key, []).append((cd, seibun_flag, mihon_flag))
+                # values 拡張: [メーカー, 商品名, 規格, 成分表フラグ(○/-), 見本フラグ(3/-), 備考]
+                for maker_key, items in maker_cds.items():
                     rows = []
                     miss = 0
-                    for cd in cds:
+                    for cd, seibun_flag, mihon_flag in items:
                         row = catalog.get(cd) or catalog.get(cd.lstrip('0') or '0')
                         if row:
                             maker_val = (row[1] if len(row) > 1 else '') or maker_key
                             product_name = (row[2] if len(row) > 2 else '')
                             spec = (row[3] if len(row) > 3 else '')
                             note = (row[7] if len(row) > 7 else '')
-                            rows.append([maker_val, product_name, spec, note])
+                            rows.append([maker_val, product_name, spec, seibun_flag, mihon_flag, note])
                         else:
                             miss += 1
-                            rows.append([maker_key, '', '', f'NOT_FOUND:{cd}'])
+                            rows.append([maker_key, '', '', seibun_flag, mihon_flag, f'NOT_FOUND:{cd}'])
                     if miss:
-                        yield (yield_event("dbg", f"[CATALOG][MISS] maker={maker_key} missing={miss}/{len(cds)}"))
+                        yield (yield_event("dbg", f"[CATALOG][MISS] maker={maker_key} missing={miss}/{len(items)}"))
                     all_maker_data[maker_key] = rows
                 yield (yield_event("dbg", f"[LOCAL_LOOKUP] makers={len(all_maker_data)}"))
 
@@ -681,17 +701,27 @@ def create_spreadsheet():
                     n = min(len(cds), len(values_bk))
                     cds = cds[:n]
                     values_bk = values_bk[:n]
-                    # values_bk 行 = [メーカー, 商品名, 規格, 備考]
-                    makers_col = [[row[0]] for row in values_bk]
-                    product_col = [[row[1]] for row in values_bk]
-                    spec_col = [[row[2]] for row in values_bk]
-                    note_col = [[row[3]] for row in values_bk]
+                    # values_bk: [メーカー, 商品名, 規格, 成分表フラグ, 見本フラグ, 備考]
+                    makers_col   = [[row[0]] for row in values_bk]
+                    product_colD = [[row[1]] for row in values_bk]  # 商品名を D 列（E,F,G は空で商品名分割無し）
+                    empty_col    = [[""] for _ in values_bk]
+                    spec_col     = [[row[2]] for row in values_bk]
+                    seibun_col   = [[row[3]] for row in values_bk]
+                    mihon_col    = [[row[4]] for row in values_bk]
+                    note_colK    = [[row[5]] for row in values_bk]
+                    note_colL    = [[""] for _ in values_bk]  # 2つ目備考列（仕様未確定のため空）
                     data_updates = [
-                        {'range': f"'{safe_title}'!A{start_row}", 'values': [[cd] for cd in cds]},
+                        {'range': f"'{safe_title}'!A{start_row}", 'values': [[cd] for cd, *_ in cds]},
                         {'range': f"'{safe_title}'!C{start_row}", 'values': makers_col},
-                        {'range': f"'{safe_title}'!D{start_row}", 'values': product_col},
-                        {'range': f"'{safe_title}'!I{start_row}", 'values': spec_col},
-                        {'range': f"'{safe_title}'!J{start_row}", 'values': note_col},
+                        {'range': f"'{safe_title}'!D{start_row}", 'values': product_colD},
+                        {'range': f"'{safe_title}'!E{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!F{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!G{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!H{start_row}", 'values': spec_col},
+                        {'range': f"'{safe_title}'!I{start_row}", 'values': seibun_col},
+                        {'range': f"'{safe_title}'!J{start_row}", 'values': mihon_col},
+                        {'range': f"'{safe_title}'!K{start_row}", 'values': note_colK},
+                        {'range': f"'{safe_title}'!L{start_row}", 'values': note_colL},
                     ]
                     _ = yield from batch_update_values(out_id, data_updates, yield_event, label="values.batchUpdate[export]")
                 # 過剰な固定sleepは不要。APIクォータ保護のため最小バックオフ（行数多い場合のみ軽い休止）

@@ -26,7 +26,8 @@ DEFAULT_SHEET = {
 }
 
 # ── テンプレート（成分表）設定 ────────────────────────────────
-# 入力された商品CDをこのスプシの「成分表」シートの A34 から書き込む
-TEMPLATE_SPREADSHEET_ID = os.getenv('TEMPLATE_SPREADSHEET_ID', "1RcTzLKQuG8ZToa4lOU5pv4VVYVSbl62lpsCgd30Ac_U")
-TEMPLATE_SHEET_ID       = int(os.getenv('TEMPLATE_SHEET_ID', '1643122230'))
-START_ROW               = int(os.getenv('START_ROW', '34'))
+# 入力された商品CDをこのスプシの「成分表」シートの A32 から書き込む
+#FMT更新版
+TEMPLATE_SPREADSHEET_ID = os.getenv('TEMPLATE_SPREADSHEET_ID', "1rzgCr2p1uIFiEhy_CxlGOYBPCLyhyXfy")
+TEMPLATE_SHEET_ID       = int(os.getenv('TEMPLATE_SHEET_ID', '1557733602'))
+START_ROW               = int(os.getenv('START_ROW', '32'))
