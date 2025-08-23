@@ -600,6 +600,16 @@ def create_spreadsheet():
     data = request.get_json()
     all_maker_data = data.get('maker_data', {})
     maker_cds      = data.get('maker_cds', {})
+    flags_list     = data.get('flags', [])
+
+    # flags を (maker, cd) -> (成分表フラグ, 見本フラグ) に整理
+    flags_map = {}
+    for item in flags_list:
+        try:
+            mk, cd, s_flag, m_flag = item
+            flags_map[(mk, cd)] = (s_flag, m_flag)
+        except Exception:
+            continue
 
     # シート名サニタイズ
     def sanitize_title(title: str, existing: set):
@@ -782,13 +792,24 @@ def create_spreadsheet():
                     n = min(len(cds), len(values_bk))
                     cds = cds[:n]
                     values_bk = values_bk[:n]
-                    makers_col   = [[row[0]] for row in values_bk]
-                    product_colD = [[row[1]] for row in values_bk]
-                    empty_col    = [[""] for _ in values_bk]
-                    spec_col     = [[row[2]] for row in values_bk]
-                    seibun_col   = [[row[3]] for row in values_bk]
-                    mihon_col    = [[row[4]] for row in values_bk]
-                    note_col     = [[row[5]] for row in values_bk]
+                    makers_col = []
+                    product_colD = []
+                    spec_col = []
+                    seibun_col = []
+                    mihon_col = []
+                    note_col = []
+                    for i in range(n):
+                        row = values_bk[i] or []
+                        # row 構成: [メーカー, 商品名, 規格, 備考] （成分表/見本は flags_map から取得）
+                        makers_col.append([row[0] if len(row) > 0 else ""])
+                        product_colD.append([row[1] if len(row) > 1 else ""])
+                        spec_col.append([row[2] if len(row) > 2 else ""])
+                        note_val = row[3] if len(row) > 3 else ""
+                        note_col.append([note_val])
+                        s_flag, m_flag = flags_map.get((maker, cds[i]), ("", ""))
+                        seibun_col.append([s_flag])
+                        mihon_col.append([m_flag])
+                    empty_col = [[""] for _ in range(n)]
                     # 既定列レター（固定部）
                     A = 'A'; C='C'; D='D'; E='E'; F='F'; G='G'; H='H'
                     # 規格は既定想定 H（テンプレが違う場合は spec_idx で上書き）
