@@ -709,6 +709,19 @@ def create_spreadsheet():
                     yield_event, label="spreadsheets.batchUpdate[rename]"
                 )
                 cds = maker_cds.get(maker, [])
+                # B4:E4 にメーカー名
+                try:
+                    _ = yield from execute_with_backoff(
+                        sheets_service.spreadsheets().values().update(
+                            spreadsheetId=out_id,
+                            range=f"'{safe_title}'!B4:E4",
+                            valueInputOption='USER_ENTERED',
+                            body={'values': [[maker, maker, maker, maker]]}
+                        ),
+                        yield_event, label="values.update[メーカー名]"
+                    )
+                except Exception as _e:
+                    yield (yield_event("dbg", f"[STEP2][メーカー名][WARN] {_e}"))
                 # 依頼内容にサンプル(=見本フラグ)が含まれていれば担当=営業担当, なければ 大出 を E22:G22 に設定
                 try:
                     mihon_exists = any((flags_map.get((maker, cd)) or ('',''))[1] in ('3','○') for cd in cds)
