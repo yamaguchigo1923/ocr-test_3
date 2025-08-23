@@ -538,6 +538,8 @@ def analyze_and_calculate():
             all_maker_data = {}
             maker_cds = {}
             flags_list = []  # [[maker_key, cd, seibun_flag, mihon_flag], ...]
+            center_name = ""
+            center_month = ""
             if selections:
                 catalog = yield from load_product_catalog(config.TEMPLATE_SPREADSHEET_ID, yield_event)
                 yield (yield_event("dbg", f"[CATALOG] size={len(catalog)}"))
@@ -565,8 +567,55 @@ def analyze_and_calculate():
                     all_maker_data[maker_key] = rows
                 yield (yield_event("dbg", f"[LOCAL_LOOKUP] makers={len(all_maker_data)}"))
 
+            # 6) 参照エクセル (ref_table) からセンター名と月を推定
+            #  期待例: "鉾田学校給食センター（10月分）" など
+            try:
+                if ref_table:
+                    flat_cells = []
+                    for r in ref_table[:40]:  # 上部40行程度探索
+                        for c in r:
+                            if isinstance(c, str) and c.strip():
+                                flat_cells.append(c.strip())
+                    import re
+                    month_pat = re.compile(r'(\d{1,2})\s*月')  # 本文用
+                    best = None
+                    for cell in flat_cells:
+                        if 'センター' in cell and '給食' in cell:
+                            best = cell
+                            break
+                        if 'センター' in cell:
+                            best = best or cell
+                    if best:
+                        # 月抽出
+                        m = month_pat.search(best)
+                        if m:
+                            center_month = m.group(1)
+                        # 括弧や（xx月分）除去してセンター名
+                        name_clean = re.sub(r'[（(].*?[）)]', '', best).strip()
+                        center_name = name_clean
+
+                # ファイル名からのフォールバック（全文字列: 鉾田学校給食センター（10月分）.xlsx 等）
+                if (not center_name or not center_month):
+                    try:
+                        ref_file_name = request.files.get('refSheetFile').filename if request.files.get('refSheetFile') else ''
+                        if ref_file_name:
+                            import os, re
+                            base = os.path.splitext(ref_file_name)[0]
+                            # 半角/全角括弧どちらも許容
+                            m2 = re.search(r'^(?P<name>.+?)[（(](?P<mon>\d{1,2})\s*月(?:分)?[)）]$', base)
+                            if m2:
+                                if not center_name:
+                                    center_name = m2.group('name').strip()
+                                if not center_month:
+                                    center_month = m2.group('mon')
+                    except Exception:
+                        pass
+                yield (yield_event("dbg", f"[CENTER] name={center_name} month={center_month}"))
+            except Exception as _e:
+                yield (yield_event("dbg", f"[CENTER][WARN] {_e}"))
+
             yield (yield_event("dbg", f"[STEP1] makers={len(all_maker_data)}"))
-            yield (yield_event("calculation_complete", {"maker_data": all_maker_data, "maker_cds": maker_cds, "flags": flags_list}))
+            yield (yield_event("calculation_complete", {"maker_data": all_maker_data, "maker_cds": maker_cds, "flags": flags_list, "center_name": center_name, "center_month": center_month}))
             yield (yield_event("dbg", "[STEP1] done"))
 
         except Exception as e:
@@ -601,6 +650,8 @@ def create_spreadsheet():
     all_maker_data = data.get('maker_data', {})
     maker_cds      = data.get('maker_cds', {})
     flags_list     = data.get('flags', [])
+    center_name    = data.get('center_name') or ""
+    center_month   = data.get('center_month') or ""
 
     # flags を (maker, cd) -> (成分表フラグ, 見本フラグ) に整理
     flags_map = {}
@@ -722,6 +773,32 @@ def create_spreadsheet():
                     )
                 except Exception as _e:
                     yield (yield_event("dbg", f"[STEP2][メーカー名][WARN] {_e}"))
+                # センター名 & 月 (B27:E27, F27)
+                if center_name or center_month:
+                    try:
+                        if center_name:
+                            _ = yield from execute_with_backoff(
+                                sheets_service.spreadsheets().values().update(
+                                    spreadsheetId=out_id,
+                                    range=f"'{safe_title}'!B27:E27",
+                                    valueInputOption='USER_ENTERED',
+                                    body={'values': [[center_name]*4]}
+                                ),
+                                yield_event, label="values.update[センター名]"
+                            )
+                        if center_month:
+                            # 例: 10 → 10
+                            _ = yield from execute_with_backoff(
+                                sheets_service.spreadsheets().values().update(
+                                    spreadsheetId=out_id,
+                                    range=f"'{safe_title}'!F27",
+                                    valueInputOption='USER_ENTERED',
+                                    body={'values': [[center_month]]}
+                                ),
+                                yield_event, label="values.update[月]"
+                            )
+                    except Exception as _e:
+                        yield (yield_event("dbg", f"[STEP2][センター名][WARN] {_e}"))
                 # 依頼内容にサンプル(=見本フラグ)が含まれていれば担当=営業担当, なければ 大出 を E22:G22 に設定
                 try:
                     mihon_exists = any((flags_map.get((maker, cd)) or ('',''))[1] in ('3','○') for cd in cds)
