@@ -307,23 +307,31 @@
           rows.push([
             "メーカー",
             "商品CD",
-            "メーカー(結果)",
+            "メーカー(商品CDから取得)",
             "商品名",
             "規格",
+            "成分表",
+            "見本",
             "備考",
           ]);
           Object.keys(maker_cds).forEach((m) => {
-            const cds = maker_cds[m];
+            const items = maker_cds[m]; // [(cd, seibunFlag, mihonFlag), ...]
             const rws = maker_data[m] || [];
-            cds.forEach((cd, i) => {
+            items.forEach((tuple, i) => {
+              const [cd, seibunF, mihonF] = Array.isArray(tuple)
+                ? tuple
+                : [tuple, "", ""];
               const v = rws[i] || [];
+              // v 構造: [メーカー, 商品名, 規格, 成分表フラグ, 見本フラグ, 備考]
               rows.push([
                 m,
                 cd,
                 v[0] || "",
                 v[1] || "",
                 v[2] || "",
-                v[3] || "",
+                v[3] || seibunF || "",
+                v[4] || mihonF || "",
+                v[5] || "",
               ]);
             });
           });
