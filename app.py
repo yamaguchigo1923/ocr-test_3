@@ -537,34 +537,36 @@ def analyze_and_calculate():
             # 5) 商品シートから直接参照しローカルで B:K 相当を構築
             all_maker_data = {}
             maker_cds = {}
+            flags_list = []  # [[maker_key, cd, seibun_flag, mihon_flag], ...]
             if selections:
                 catalog = yield from load_product_catalog(config.TEMPLATE_SPREADSHEET_ID, yield_event)
                 yield (yield_event("dbg", f"[CATALOG] size={len(catalog)}"))
                 for maker, cd, seibun_flag, mihon_flag in selections:
                     maker_key = maker or "メーカー名なし"
-                    maker_cds.setdefault(maker_key, []).append((cd, seibun_flag, mihon_flag))
-                # values 拡張: [メーカー, 商品名, 規格, 成分表フラグ(○/-), 見本フラグ(3/-), 備考]
-                for maker_key, items in maker_cds.items():
+                    maker_cds.setdefault(maker_key, []).append(cd)
+                    flags_list.append([maker_key, cd, seibun_flag, mihon_flag])
+                # values: [メーカー, 商品名, 規格, 備考] （元仕様）
+                for maker_key, cds in maker_cds.items():
                     rows = []
                     miss = 0
-                    for cd, seibun_flag, mihon_flag in items:
+                    for cd in cds:
                         row = catalog.get(cd) or catalog.get(cd.lstrip('0') or '0')
                         if row:
                             maker_val = (row[1] if len(row) > 1 else '') or maker_key
                             product_name = (row[2] if len(row) > 2 else '')
                             spec = (row[3] if len(row) > 3 else '')
                             note = (row[7] if len(row) > 7 else '')
-                            rows.append([maker_val, product_name, spec, seibun_flag, mihon_flag, note])
+                            rows.append([maker_val, product_name, spec, note])
                         else:
                             miss += 1
-                            rows.append([maker_key, '', '', seibun_flag, mihon_flag, f'NOT_FOUND:{cd}'])
+                            rows.append([maker_key, '', '', f'NOT_FOUND:{cd}'])
                     if miss:
-                        yield (yield_event("dbg", f"[CATALOG][MISS] maker={maker_key} missing={miss}/{len(items)}"))
+                        yield (yield_event("dbg", f"[CATALOG][MISS] maker={maker_key} missing={miss}/{len(cds)}"))
                     all_maker_data[maker_key] = rows
                 yield (yield_event("dbg", f"[LOCAL_LOOKUP] makers={len(all_maker_data)}"))
 
             yield (yield_event("dbg", f"[STEP1] makers={len(all_maker_data)}"))
-            yield (yield_event("calculation_complete", {"maker_data": all_maker_data, "maker_cds": maker_cds}))
+            yield (yield_event("calculation_complete", {"maker_data": all_maker_data, "maker_cds": maker_cds, "flags": flags_list}))
             yield (yield_event("dbg", "[STEP1] done"))
 
         except Exception as e:

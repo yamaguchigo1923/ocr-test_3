@@ -302,36 +302,38 @@
 
         function CalcResult() {
           if (!calcData) return null;
-          const { maker_data, maker_cds } = calcData;
+          const { maker_data, maker_cds, flags } = calcData;
           const rows = [];
           rows.push([
             "メーカー",
             "商品CD",
-            "メーカー(商品CDから取得)",
+            "メーカー(結果)",
             "商品名",
             "規格",
             "成分表",
             "見本",
             "備考",
           ]);
+          const flagMap = new Map();
+          (flags || []).forEach(([mk, cd, sFlag, mFlag]) => {
+            flagMap.set(`${mk}__${cd}`, { sFlag, mFlag });
+          });
           Object.keys(maker_cds).forEach((m) => {
-            const items = maker_cds[m]; // [(cd, seibunFlag, mihonFlag), ...]
+            const cds = maker_cds[m];
             const rws = maker_data[m] || [];
-            items.forEach((tuple, i) => {
-              const [cd, seibunF, mihonF] = Array.isArray(tuple)
-                ? tuple
-                : [tuple, "", ""];
+            cds.forEach((cd, i) => {
               const v = rws[i] || [];
-              // v 構造: [メーカー, 商品名, 規格, 成分表フラグ, 見本フラグ, 備考]
+              const fm = flagMap.get(`${m}__${cd}`) || {};
+              // v: [メーカー, 商品名, 規格, 備考]
               rows.push([
                 m,
                 cd,
                 v[0] || "",
                 v[1] || "",
                 v[2] || "",
-                v[3] || seibunF || "",
-                v[4] || mihonF || "",
-                v[5] || "",
+                fm.sFlag || "",
+                fm.mFlag || "",
+                v[3] || "",
               ]);
             });
           });
