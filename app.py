@@ -396,6 +396,7 @@ def analyze_and_calculate():
     base_path = f"tmp/{task_id}"
 
     ref_file = request.files.get('refSheetFile')
+    ref_original_filename = ref_file.filename if ref_file else ""
     ref_file_path = ""
     if ref_file:
         ref_file_path = f"{base_path}/ref/{ref_file.filename}"
@@ -601,8 +602,7 @@ def analyze_and_calculate():
                 # ファイル名からのフォールバック（最優先・より頑健）
                 if not center_name or not center_month:
                     try:
-                        ref_up = request.files.get('refSheetFile')
-                        ref_file_name = ref_up.filename if ref_up else ''
+                        ref_file_name = ref_original_filename
                         import os, re
                         base = os.path.splitext(os.path.basename(ref_file_name))[0]
                         if base:
