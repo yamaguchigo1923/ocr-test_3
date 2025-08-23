@@ -698,30 +698,128 @@ def create_spreadsheet():
                 )
                 cds = maker_cds.get(maker, [])
                 if cds and values_bk:
+                    # ---- ヘッダ検査と列挿入（規格と備考の間に 成分表 / 見本 が無ければ追加） ----
+                    def col_letter(idx0: int) -> str:
+                        s = ""
+                        n = idx0 + 1
+                        while n:
+                            n, r = divmod(n - 1, 26)
+                            s = chr(65 + r) + s
+                        return s
+                    header_row = config.START_ROW - 1
+                    # A～Z まで読み込み（必要に応じ拡張可）
+                    rng_header = f"'{safe_title}'!A{header_row}:Z{header_row}"
+                    try:
+                        res_header = yield from execute_with_backoff(
+                            sheets_service.spreadsheets().values().get(
+                                spreadsheetId=out_id, range=rng_header, valueRenderOption='FORMATTED_VALUE'
+                            ), yield_event, label="values.get[export-header]"
+                        )
+                        header_vals = (res_header.get('values') or [[]])[0]
+                    except Exception:
+                        header_vals = []
+                    # インデックス探索
+                    def find_idx(keyword: str):
+                        for j, v in enumerate(header_vals):
+                            if str(v).strip() == keyword:
+                                return j
+                        return None
+                    spec_idx = find_idx('規格')
+                    seibun_idx = find_idx('成分表')
+                    mihon_idx = find_idx('見本') or find_idx('サンプル')
+                    # 備考列（複数想定、最初の備考位置）
+                    biko_indices = [j for j, v in enumerate(header_vals) if str(v).startswith('備考')]
+                    first_biko_idx = biko_indices[0] if biko_indices else None
+                    # 成分表/見本列が存在しない && 規格と備考がある → 挿入
+                    if spec_idx is not None and first_biko_idx is not None and (seibun_idx is None and mihon_idx is None or seibun_idx is None or mihon_idx is None):
+                        insert_pos = spec_idx + 1  # 規格の直後
+                        need_cols = 0
+                        if seibun_idx is None: need_cols += 1
+                        if mihon_idx is None: need_cols += 1
+                        if need_cols:
+                            _ = yield from execute_with_backoff(
+                                sheets_service.spreadsheets().batchUpdate(
+                                    spreadsheetId=out_id,
+                                    body={'requests':[{'insertDimension': {'range': {'sheetId': new_sheet_id, 'dimension': 'COLUMNS', 'startIndex': insert_pos, 'endIndex': insert_pos + need_cols}, 'inheritFromBefore': True}}]}
+                                ), yield_event, label="spreadsheets.batchUpdate[insertCols]"
+                            )
+                            # ヘッダ書き込み
+                            headers_to_write = []
+                            write_range = f"'{safe_title}'!{col_letter(insert_pos)}{header_row}:{col_letter(insert_pos+need_cols-1)}{header_row}"
+                            for _i in range(need_cols):
+                                if seibun_idx is None:
+                                    headers_to_write.append(['成分表'])
+                                    seibun_idx = insert_pos
+                                    insert_pos += 1
+                                elif mihon_idx is None:
+                                    headers_to_write.append(['見本'])
+                                    mihon_idx = insert_pos
+                                    insert_pos += 1
+                            _ = yield from execute_with_backoff(
+                                sheets_service.spreadsheets().values().update(
+                                    spreadsheetId=out_id, range=write_range, valueInputOption='USER_ENTERED', body={'values': list(map(list, zip(*headers_to_write)))}
+                                ), yield_event, label="values.update[insertHeaders]"
+                            )
+                            # ヘッダ再取得（後続の letter 計算統一のため）
+                            try:
+                                res_header = yield from execute_with_backoff(
+                                    sheets_service.spreadsheets().values().get(
+                                        spreadsheetId=out_id, range=rng_header, valueRenderOption='FORMATTED_VALUE'
+                                    ), yield_event, label="values.get[export-header2]"
+                                )
+                                header_vals = (res_header.get('values') or [[]])[0]
+                            except Exception:
+                                pass
+                    # 再計算
+                    spec_idx = find_idx('規格') if spec_idx is None else spec_idx
+                    seibun_idx = find_idx('成分表') if seibun_idx is None else seibun_idx
+                    mihon_idx = find_idx('見本') or find_idx('サンプル') if mihon_idx is None else mihon_idx
+                    # 備考開始位置（最初の備考）
+                    first_biko_idx = ([j for j, v in enumerate(header_vals) if str(v).startswith('備考')] or [None])[0]
+                    # データ書き込み準備
                     n = min(len(cds), len(values_bk))
                     cds = cds[:n]
                     values_bk = values_bk[:n]
-                    # values_bk: [メーカー, 商品名, 規格, 成分表フラグ, 見本フラグ, 備考]
                     makers_col   = [[row[0]] for row in values_bk]
-                    product_colD = [[row[1]] for row in values_bk]  # 商品名を D 列（E,F,G は空で商品名分割無し）
+                    product_colD = [[row[1]] for row in values_bk]
                     empty_col    = [[""] for _ in values_bk]
                     spec_col     = [[row[2]] for row in values_bk]
                     seibun_col   = [[row[3]] for row in values_bk]
                     mihon_col    = [[row[4]] for row in values_bk]
-                    note_colK    = [[row[5]] for row in values_bk]
-                    note_colL    = [[""] for _ in values_bk]  # 2つ目備考列（仕様未確定のため空）
+                    note_col     = [[row[5]] for row in values_bk]
+                    # 既定列レター（固定部）
+                    A = 'A'; C='C'; D='D'; E='E'; F='F'; G='G'; H='H'
+                    # 規格は既定想定 H（テンプレが違う場合は spec_idx で上書き）
+                    if spec_idx is not None:
+                        H = col_letter(spec_idx)
+                    if seibun_idx is not None:
+                        I = col_letter(seibun_idx)
+                    else:
+                        I = col_letter((spec_idx or 7)+1)
+                    if mihon_idx is not None:
+                        J = col_letter(mihon_idx)
+                    else:
+                        J = col_letter((spec_idx or 7)+2)
+                    # 備考は first_biko_idx 位置（無い場合は J の次）
+                    if first_biko_idx is not None:
+                        K = col_letter(first_biko_idx)
+                        L = col_letter(first_biko_idx + 1) if first_biko_idx + 1 < 26 else col_letter(first_biko_idx + 1)
+                    else:
+                        K = col_letter(ord(J)-65 + 1)
+                        L = col_letter(ord(J)-65 + 2)
                     data_updates = [
-                        {'range': f"'{safe_title}'!A{start_row}", 'values': [[cd] for cd, *_ in cds]},
-                        {'range': f"'{safe_title}'!C{start_row}", 'values': makers_col},
-                        {'range': f"'{safe_title}'!D{start_row}", 'values': product_colD},
-                        {'range': f"'{safe_title}'!E{start_row}", 'values': empty_col},
-                        {'range': f"'{safe_title}'!F{start_row}", 'values': empty_col},
-                        {'range': f"'{safe_title}'!G{start_row}", 'values': empty_col},
-                        {'range': f"'{safe_title}'!H{start_row}", 'values': spec_col},
-                        {'range': f"'{safe_title}'!I{start_row}", 'values': seibun_col},
-                        {'range': f"'{safe_title}'!J{start_row}", 'values': mihon_col},
-                        {'range': f"'{safe_title}'!K{start_row}", 'values': note_colK},
-                        {'range': f"'{safe_title}'!L{start_row}", 'values': note_colL},
+                        {'range': f"'{safe_title}'!{A}{start_row}", 'values': [[cd] for cd, *_ in cds]},
+                        {'range': f"'{safe_title}'!{C}{start_row}", 'values': makers_col},
+                        {'range': f"'{safe_title}'!{D}{start_row}", 'values': product_colD},
+                        {'range': f"'{safe_title}'!{E}{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!{F}{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!{G}{start_row}", 'values': empty_col},
+                        {'range': f"'{safe_title}'!{H}{start_row}", 'values': spec_col},
+                        {'range': f"'{safe_title}'!{I}{start_row}", 'values': seibun_col},
+                        {'range': f"'{safe_title}'!{J}{start_row}", 'values': mihon_col},
+                        {'range': f"'{safe_title}'!{K}{start_row}", 'values': note_col},
+                        # 2つ目備考は空（仕様未確定）
+                        {'range': f"'{safe_title}'!{L}{start_row}", 'values': empty_col},
                     ]
                     _ = yield from batch_update_values(out_id, data_updates, yield_event, label="values.batchUpdate[export]")
                 # 過剰な固定sleepは不要。APIクォータ保護のため最小バックオフ（行数多い場合のみ軽い休止）
