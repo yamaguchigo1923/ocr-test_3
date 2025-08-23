@@ -25,6 +25,11 @@ print("[BOOT] Flask initialized")
 APP_VERSION = "2025-08-14a"
 print(f"[BOOT] APP_VERSION={APP_VERSION}")
 
+# --- Health check endpoint (Render 502 調査用) ---
+@app.route('/healthz')
+def healthz():
+    return f"ok {APP_VERSION}", 200, {'Content-Type': 'text/plain; charset=utf-8'}
+
 # --- ENV ---
 AZURE_ENDPOINT  = os.environ.get("AZURE_ENDPOINT", "")
 AZURE_KEY       = os.environ.get("AZURE_KEY", "")
