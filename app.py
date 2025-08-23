@@ -709,6 +709,21 @@ def create_spreadsheet():
                     yield_event, label="spreadsheets.batchUpdate[rename]"
                 )
                 cds = maker_cds.get(maker, [])
+                # 依頼内容にサンプル(=見本フラグ)が含まれていれば担当=営業担当, なければ 大出 を E22:G22 に設定
+                try:
+                    mihon_exists = any((flags_map.get((maker, cd)) or ('',''))[1] in ('3','○') for cd in cds)
+                    tantou_val = '営業担当' if mihon_exists else '大出'
+                    _ = yield from execute_with_backoff(
+                        sheets_service.spreadsheets().values().update(
+                            spreadsheetId=out_id,
+                            range=f"'{safe_title}'!E22:G22",
+                            valueInputOption='USER_ENTERED',
+                            body={'values': [[tantou_val, tantou_val, tantou_val]]}
+                        ),
+                        yield_event, label="values.update[担当]"
+                    )
+                except Exception as _e:
+                    yield (yield_event("dbg", f"[STEP2][担当][WARN] {_e}"))
                 if cds and values_bk:
                     # ---- ヘッダ検査と列挿入（規格と備考の間に 成分表 / 見本 が無ければ追加） ----
                     def col_letter(idx0: int) -> str:
